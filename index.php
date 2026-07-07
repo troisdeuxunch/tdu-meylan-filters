@@ -132,7 +132,7 @@ function tdu_mf_get_nearest_category()
 	}
 
 	if(is_tax('product_cat')){
-		return get_queried_object()->term_id ?? null;
+		return meylan_get_queried_term()->term_id ?? null;
 	}
 
 	return null;
@@ -168,7 +168,7 @@ function tdu_mf_get_current_parent_category() {
 	}
 
 	// else...
-	$current_term = get_queried_object();
+	$current_term = meylan_get_queried_term();
 	
 	// Safety check - ensure we have a valid term object
 	if (!$current_term || !is_object($current_term) || !isset($current_term->term_id)) {
@@ -195,7 +195,7 @@ function tdu_mf_get_current_parent_category() {
  *                  null if viewing a parent category
  */
 function tdu_mf_get_current_children_category() {
-	$current_term = get_queried_object();
+	$current_term = meylan_get_queried_term();
 	
 	// Safety check - ensure we have a valid term object
 	if (!$current_term || !is_object($current_term) || !isset($current_term->term_id)) {
@@ -573,7 +573,7 @@ function tdu_mf_get_new_categories()
 
 	if ($is_brand) {
 		// Get current brand term
-		$brand = get_queried_object();
+		$brand = meylan_get_queried_term();
 		
 		// Check cache first
 		$cache_key = 'brand_categories_' . $brand->term_id;
@@ -759,7 +759,7 @@ function tdu_mf_get_query_filters( $category_id = null, $brand_id = null ) {
  */
 function tdu_get_current_brand_query_var() {
 	if(is_tax('product_brand')){
-		return get_queried_object()->slug ?? null;
+		return meylan_get_queried_term()->slug ?? null;
 	}
 
 	return isset( $_GET['lm_brand'] ) ? sanitize_text_field( wp_unslash( $_GET['lm_brand'] ) ) : null;
@@ -1527,7 +1527,7 @@ function tdu_mf_pagination( WP_Query $products_query ) {
 
 function tdu_mf_is_jewerly()
 {
-	$current_cat = get_queried_object();
+	$current_cat = meylan_get_queried_term();
 	$is_jewerly_cat = $current_cat instanceof WP_Term && $current_cat->taxonomy === 'product_cat' && strpos($current_cat->slug, 'joaillerie') !== false;
 	$is_jewerly_param = isset($_GET['lm_sc']) && strpos($_GET['lm_sc'], 'joaillerie') !== false;
 
@@ -1536,7 +1536,7 @@ function tdu_mf_is_jewerly()
 
 function tdu_mf_is_accessories()
 {
-	$current_cat = get_queried_object();
+	$current_cat = meylan_get_queried_term();
 	$is_jewerly_cat = $current_cat instanceof WP_Term && $current_cat->taxonomy === 'product_cat' && strpos($current_cat->slug, 'accessoires') !== false;
 	$is_jewerly_param = isset($_GET['lm_sc']) && strpos($_GET['lm_sc'], 'accessoires') !== false;
 
