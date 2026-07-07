@@ -1,5 +1,5 @@
 <div class="tdu-mf-categories">
-	<div class="main-categories" style="display: flex; gap: 10px;">
+	<div class="main-categories">
 	<?php foreach($categories as $category) : ?>
 		<div class="tdu-mf-category">
 			<a href="<?php echo $category['permalink']; ?>" class="tdu-mf-category-link">
@@ -13,7 +13,7 @@
 	<?php endforeach; ?>
 	</div>
 
-	<div class="sub-categories" style="display: flex; gap: 10px;">
+	<div class="sub-categories">
 		<?php foreach($categories as $category) : ?>
 			<?php if($category['id'] === $current_parent_category && !empty($category['children'])) : ?>
 				<?php foreach($category['children'] as $child) : ?>
