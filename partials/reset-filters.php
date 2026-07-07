@@ -17,8 +17,8 @@ if ($current_brand || $current_type || $current_collection ||
     $current_search): ?>
 
     <div class="tdu-filters-reset">
-        <a href="<?php echo esc_url(strtok($_SERVER["REQUEST_URI"], '?')); ?>" class="tdu-filters-reset-button">
-            Réinitialiser les filtres
+        <a href="<?php echo esc_url(strtok($_SERVER["REQUEST_URI"], '?')); ?>#tdu-mf-results" class="tdu-filters-reset-button">
+            <?php esc_html_e('Réinitialiser les filtres', 'tdu-meylan-filters'); ?>
         </a>
     </div>
 
