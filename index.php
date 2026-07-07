@@ -22,13 +22,61 @@ define('CACHE_TIME_DIAMETERS', 2 * HOUR_IN_SECONDS); // 2 hours
 define('CACHE_TIME_PRICE_RANGES', 2 * HOUR_IN_SECONDS); // 15 minutes
 
 /**
+ * Suffix to append to cache keys so results for one WPML language never leak
+ * into another (needed because get_transient()/wp_cache_get() are shared
+ * across all languages of the site).
+ *
+ * @return string
+ */
+function tdu_mf_lang_cache_suffix() {
+    if ( defined( 'ICL_SITEPRESS_VERSION' ) ) {
+        $lang = apply_filters( 'wpml_current_language', null );
+        if ( $lang ) {
+            return '_' . $lang;
+        }
+    }
+    return '';
+}
+
+/**
+ * Builds the JOIN/WHERE SQL fragments needed to restrict a raw term_taxonomy
+ * query to the terms of the current WPML language. Without this, raw SQL
+ * queries on wp_terms/wp_term_taxonomy return every language's terms at once
+ * (e.g. "Automatic" and "Automatic-en" both showing in a filter dropdown).
+ *
+ * @param string $taxonomy Taxonomy of the term being selected.
+ * @param string $tt_alias SQL alias used for the wp_term_taxonomy row of that term.
+ * @return array{join:string,where:string,param:string}|null
+ */
+function tdu_mf_get_wpml_lang_filter_sql( $taxonomy, $tt_alias = 'tt' ) {
+    if ( ! defined( 'ICL_SITEPRESS_VERSION' ) ) {
+        return null;
+    }
+
+    $current_lang = apply_filters( 'wpml_current_language', null );
+
+    if ( ! $current_lang ) {
+        return null;
+    }
+
+    global $wpdb;
+    $join_alias = 'tdu_icl_' . $tt_alias;
+
+    return array(
+        'join'  => "INNER JOIN {$wpdb->prefix}icl_translations {$join_alias} ON {$join_alias}.element_id = {$tt_alias}.term_taxonomy_id AND {$join_alias}.element_type = 'tax_{$taxonomy}'",
+        'where' => "{$join_alias}.language_code = %s",
+        'param' => $current_lang,
+    );
+}
+
+/**
  * Get hierarchical product category structure with caching
  *
  * @since 1.0.0
  * @return array Array of product categories with their children
  */
 function tdu_mf_get_categories_structure() {
-    $cache_key = 'tdu_categories_structure';
+    $cache_key = 'tdu_categories_structure' . tdu_mf_lang_cache_suffix();
     $categories = wp_cache_get($cache_key);
     
     if (false === $categories) {
@@ -221,12 +269,18 @@ function tdu_mf_get_category_brands($category_id) {
         return array();
     }
     
-    // Create unique cache key
-    $transient_key = 'tdu_category_brands_' . $category_id;
+    // Create unique cache key (language-scoped, see tdu_mf_lang_cache_suffix())
+    $transient_key = 'tdu_category_brands_' . $category_id . tdu_mf_lang_cache_suffix();
     $brands = get_transient($transient_key);
     
     if (false === $brands) {
         global $wpdb;
+
+        $lang_filter = tdu_mf_get_wpml_lang_filter_sql('product_brand', 'tt');
+        $params = array($category_id);
+        if ($lang_filter) {
+            $params[] = $lang_filter['param'];
+        }
         
         // Optimized SQL query instead of get_posts() + wp_get_post_terms()
         $sql = "
@@ -237,15 +291,17 @@ function tdu_mf_get_category_brands($category_id) {
             INNER JOIN {$wpdb->posts} p ON tr.object_id = p.ID
             INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
             INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+            " . ($lang_filter ? $lang_filter['join'] : '') . "
             WHERE tt.taxonomy = 'product_brand'
             AND tt2.taxonomy = 'product_cat'
             AND tt2.term_id = %d
             AND p.post_type = 'product'
             AND p.post_status = 'publish'
+            " . ($lang_filter ? "AND {$lang_filter['where']}" : '') . "
             ORDER BY t.name ASC
         ";
         
-        $results = $wpdb->get_results($wpdb->prepare($sql, $category_id));
+        $results = $wpdb->get_results($wpdb->prepare($sql, ...$params));
         
         // Convert to expected format
         $brands = array();
@@ -275,11 +331,11 @@ function tdu_mf_get_watch_types() {
     $current_nearest_category = tdu_mf_get_nearest_category(); // term_id
     $current_brand = tdu_get_current_brand_query_var();
     
-    // Create cache key based on current filters
+    // Create cache key based on current filters (language-scoped, see tdu_mf_lang_cache_suffix())
     $cache_key = 'tdu_watch_types_' . md5(serialize(array(
         'category' => $current_nearest_category,
         'brand' => $current_brand
-    )));
+    ))) . tdu_mf_lang_cache_suffix();
     
     $types = get_transient($cache_key);
     
@@ -290,6 +346,14 @@ function tdu_mf_get_watch_types() {
         $where_conditions = array("p.post_type = 'product'", "p.post_status = 'publish'");
         $join_conditions = array();
         $params = array();
+
+        // Restrict results to terms of the current WPML language
+        $lang_filter = tdu_mf_get_wpml_lang_filter_sql('pa_product_watch_type', 'tt');
+        if ($lang_filter) {
+            $join_conditions[] = $lang_filter['join'];
+            $where_conditions[] = $lang_filter['where'];
+            $params[] = $lang_filter['param'];
+        }
         
         // Add category filter
         if ($current_nearest_category) {
@@ -347,11 +411,11 @@ function tdu_mf_get_collections() {
     $current_nearest_category = tdu_mf_get_nearest_category();
     $current_brand = tdu_get_current_brand_query_var();
     
-    // Create cache key based on current filters
+    // Create cache key based on current filters (language-scoped, see tdu_mf_lang_cache_suffix())
     $cache_key = 'tdu_collections_' . md5(serialize(array(
         'parent_cat' => $current_nearest_category,
         'brand' => $current_brand
-    )));
+    ))) . tdu_mf_lang_cache_suffix();
     
     $collections = get_transient($cache_key);
     
@@ -362,6 +426,14 @@ function tdu_mf_get_collections() {
         $where_conditions = array("p.post_type = 'product'", "p.post_status = 'publish'");
         $join_conditions = array();
         $params = array();
+
+        // Restrict results to terms of the current WPML language
+        $lang_filter = tdu_mf_get_wpml_lang_filter_sql('product_collection', 'tt');
+        if ($lang_filter) {
+            $join_conditions[] = $lang_filter['join'];
+            $where_conditions[] = $lang_filter['where'];
+            $params[] = $lang_filter['param'];
+        }
         
         if ($current_nearest_category) {
             $join_conditions[] = "INNER JOIN {$wpdb->term_relationships} tr_cat ON p.ID = tr_cat.object_id";
@@ -1190,11 +1262,28 @@ add_action('save_post', 'tdu_mf_clear_product_cache', 10, 2);
 add_action('delete_post', 'tdu_mf_clear_product_cache', 10, 2);
 
 /**
+ * Deletes the 'tdu_categories_structure' object cache entry for every WPML
+ * language (not just the language of the request that triggered the clear).
+ */
+function tdu_mf_clear_categories_structure_cache() {
+    wp_cache_delete('tdu_categories_structure');
+
+    if ( defined( 'ICL_SITEPRESS_VERSION' ) ) {
+        $languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
+        if ( is_array( $languages ) ) {
+            foreach ( array_keys( $languages ) as $lang_code ) {
+                wp_cache_delete( 'tdu_categories_structure_' . $lang_code );
+            }
+        }
+    }
+}
+
+/**
  * Clear category-related caches
  */
 function tdu_mf_clear_category_cache($term_id = null) {
     // Clear categories structure cache
-    wp_cache_delete('tdu_categories_structure');
+    tdu_mf_clear_categories_structure_cache();
     
     // Clear all category brands caches
     tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
@@ -1247,7 +1336,7 @@ function tdu_mf_clear_transients_by_prefix($prefix) {
  */
 function tdu_mf_clear_all_caches() {
     // Clear WordPress object cache
-    wp_cache_delete('tdu_categories_structure');
+    tdu_mf_clear_categories_structure_cache();
     
     // Clear all transients
     tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
