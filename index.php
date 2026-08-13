@@ -17,6 +17,7 @@ define('CACHE_TIME_CATEGORIES_STRUCTURE', 2 * HOUR_IN_SECONDS); // 5 minutes for
 define('CACHE_TIME_CATEGORIES_STRUCTURE_WITH_DATA', 2 * HOUR_IN_SECONDS); // 15 minutes for data
 define('CACHE_TIME_CATEGORY_BRANDS', 2 * HOUR_IN_SECONDS); // 1 hour
 define('CACHE_TIME_WATCH_TYPES', 2 * HOUR_IN_SECONDS); // 30 minutes
+define('CACHE_TIME_JEWELRY_TYPES', 2 * HOUR_IN_SECONDS); // 30 minutes
 define('CACHE_TIME_COLLECTIONS', 2 * HOUR_IN_SECONDS); // 30 minutes
 define('CACHE_TIME_DIAMETERS', 2 * HOUR_IN_SECONDS); // 2 hours
 define('CACHE_TIME_PRICE_RANGES', 2 * HOUR_IN_SECONDS); // 15 minutes
@@ -402,6 +403,79 @@ function tdu_mf_get_watch_types() {
 }
 
 /**
+ * Gets the jewelry types for a given category with caching
+ *
+ * @return array Array of jewelry type data
+ */
+function tdu_mf_get_jewelry_types() {
+    $current_nearest_category = tdu_mf_get_nearest_category();
+    $current_brand = tdu_get_current_brand_query_var();
+
+    $cache_key = 'tdu_jewelry_types_' . md5(serialize(array(
+        'category' => $current_nearest_category,
+        'brand' => $current_brand
+    ))) . tdu_mf_lang_cache_suffix();
+
+    $types = get_transient($cache_key);
+
+    if (false === $types) {
+        global $wpdb;
+
+        $where_conditions = array("p.post_type = 'product'", "p.post_status = 'publish'");
+        $join_conditions = array();
+        $params = array();
+
+        $lang_filter = tdu_mf_get_wpml_lang_filter_sql('pa_product_jewelry_type', 'tt');
+        if ($lang_filter) {
+            $join_conditions[] = $lang_filter['join'];
+            $where_conditions[] = $lang_filter['where'];
+            $params[] = $lang_filter['param'];
+        }
+
+        if ($current_nearest_category) {
+            $join_conditions[] = "INNER JOIN {$wpdb->term_relationships} tr_cat ON p.ID = tr_cat.object_id";
+            $join_conditions[] = "INNER JOIN {$wpdb->term_taxonomy} tt_cat ON tr_cat.term_taxonomy_id = tt_cat.term_taxonomy_id";
+            $where_conditions[] = "tt_cat.taxonomy = 'product_cat' AND tt_cat.term_id = %d";
+            $params[] = $current_nearest_category;
+        }
+
+        if ($current_brand) {
+            $join_conditions[] = "INNER JOIN {$wpdb->term_relationships} tr_brand ON p.ID = tr_brand.object_id";
+            $join_conditions[] = "INNER JOIN {$wpdb->term_taxonomy} tt_brand ON tr_brand.term_taxonomy_id = tt_brand.term_taxonomy_id";
+            $join_conditions[] = "INNER JOIN {$wpdb->terms} t_brand ON tt_brand.term_id = t_brand.term_id";
+            $where_conditions[] = "tt_brand.taxonomy = 'product_brand' AND t_brand.slug = %s";
+            $params[] = $current_brand;
+        }
+
+        $sql = "
+            SELECT DISTINCT t.term_id, t.name, t.slug
+            FROM {$wpdb->terms} t
+            INNER JOIN {$wpdb->term_taxonomy} tt ON t.term_id = tt.term_id
+            INNER JOIN {$wpdb->term_relationships} tr ON tt.term_taxonomy_id = tr.term_taxonomy_id
+            INNER JOIN {$wpdb->posts} p ON tr.object_id = p.ID
+            " . implode(' ', $join_conditions) . "
+            WHERE tt.taxonomy = 'pa_product_jewelry_type'
+            AND " . implode(' AND ', $where_conditions) . "
+            ORDER BY t.name ASC
+        ";
+
+        if (!empty($params)) {
+            $types = $wpdb->get_results($wpdb->prepare($sql, ...$params));
+        } else {
+            $types = $wpdb->get_results($sql);
+        }
+
+        if (!$types || !is_array($types)) {
+            $types = array();
+        }
+
+        set_transient($cache_key, $types, CACHE_TIME_JEWELRY_TYPES);
+    }
+
+    return $types;
+}
+
+/**
  * Gets the collections for a given category with caching
  *
  * @param int $category_id The term ID of the category to retrieve collections for.
@@ -720,6 +794,7 @@ function tdu_mf_get_query_filters( $category_id = null, $brand_id = null ) {
 	$current_diameter_max     = tdu_get_current_diameter_max_query_var();
 	$current_collection       = tdu_get_current_collection_query_var();
 	$current_watch_type       = tdu_get_current_type_query_var();
+	$current_jewelry_type     = tdu_get_current_jewelry_type_query_var();
 
 	if($brand_id !== null){
 		$brand = get_term_by('id', $brand_id, 'product_brand')->slug;
@@ -773,6 +848,16 @@ function tdu_mf_get_query_filters( $category_id = null, $brand_id = null ) {
 			'taxonomy' => 'pa_product_watch_type',
 			'field'    => 'slug',
 			'terms'    => $current_watch_type,
+			'operator' => 'IN'
+		);
+	}
+
+	// filter attributes : pa_product_jewelry_type
+	if($current_jewelry_type) {
+		$tax_query_filters[] = array(
+			'taxonomy' => 'pa_product_jewelry_type',
+			'field'    => 'slug',
+			'terms'    => $current_jewelry_type,
 			'operator' => 'IN'
 		);
 	}
@@ -914,6 +999,17 @@ function tdu_get_current_collection_query_var() {
 	return isset( $_GET['lm_type'] ) ? sanitize_text_field( wp_unslash( $_GET['lm_type'] ) ) : null;
 }
 
+/**
+ * Gets the current jewelry type query variable
+ *
+ * Returns the jewelry type query variable from the GET parameters.
+ *
+ * @return string|null The jewelry type query variable if present, otherwise null
+ */
+function tdu_get_current_jewelry_type_query_var() {
+	return isset( $_GET['lm_jewelry_type'] ) ? sanitize_text_field( wp_unslash( $_GET['lm_jewelry_type'] ) ) : null;
+}
+
 
 /**
  * Renders the filters
@@ -934,7 +1030,9 @@ function tdu_mf_render_filters() {
 	$brands     = tdu_mf_get_category_brands( $current_children_category ? $current_children_category : $current_parent_category );
 	$diameters = tdu_mf_get_diameters();
 	$collections = tdu_mf_get_collections();
-	$watch_types = tdu_mf_get_watch_types();
+	$is_jewerly = tdu_mf_is_jewerly();
+	$watch_types = $is_jewerly ? array() : tdu_mf_get_watch_types();
+	$jewelry_types = $is_jewerly ? tdu_mf_get_jewelry_types() : array();
 	?>
 	<div class="tdu-filters-wrapper" id="tdu-mf-results">
 		<button class="tdu-filters-mobile-toggle" aria-expanded="false" aria-controls="tdu-filters-content">
@@ -968,7 +1066,11 @@ function tdu_mf_render_filters() {
 					<?php include plugin_dir_path(__FILE__) . 'partials/filter-collections.php'; ?>
 					<?php endif; ?>
 
+					<?php if ($is_jewerly): ?>
+					<?php include plugin_dir_path(__FILE__) . 'partials/filter-jewelry-types.php'; ?>
+					<?php else: ?>
 					<?php include plugin_dir_path(__FILE__) . 'partials/filter-watch-types.php'; ?>
+					<?php endif; ?>
 					
 					<?php if (!tdu_mf_is_jewerly() && !tdu_mf_is_accessories()): ?>
 						<?php include plugin_dir_path(__FILE__) . 'partials/filter-diameter.php'; ?>
@@ -1006,7 +1108,7 @@ function tdu_mf_render_filters() {
 				let count = 0;
 
 				// List of filter parameters to check
-				const filterParams = ['lm_brand', 'lm_collection', 'lm_type', 'lm_diameter', 'lm_price_min', 'lm_price_max', 'lm_search'];
+				const filterParams = ['lm_brand', 'lm_collection', 'lm_type', 'lm_jewelry_type', 'lm_diameter', 'lm_price_min', 'lm_price_max', 'lm_search'];
 
 				filterParams.forEach(param => {
 					if (urlParams.has(param) && urlParams.get(param) !== '') {
@@ -1290,6 +1392,7 @@ function tdu_mf_clear_category_cache($term_id = null) {
     
     // Clear filter caches
     tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
+    tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
 }
@@ -1301,6 +1404,7 @@ function tdu_mf_clear_brand_cache($term_id = null) {
     // Clear all brand-related caches
     tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
     tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
+    tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
 }
@@ -1313,6 +1417,7 @@ function tdu_mf_clear_product_cache($post_id, $post = null) {
         // Clear all product-related caches
         tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
         tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
+        tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
         tdu_mf_clear_transients_by_prefix('tdu_collections_');
         tdu_mf_clear_transients_by_prefix('tdu_price_');
         
@@ -1341,6 +1446,7 @@ function tdu_mf_clear_all_caches() {
     // Clear all transients
     tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
     tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
+    tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
     delete_transient('tdu_diameters_processed');
@@ -1436,6 +1542,7 @@ function tdu_mf_admin_page() {
             <p><strong>Categories Structure:</strong> Cached for 15 minutes</p>
             <p><strong>Category Brands:</strong> Cached for 1 hour</p>
             <p><strong>Watch Types:</strong> Cached for 30 minutes</p>
+            <p><strong>Jewelry Types:</strong> Cached for 30 minutes</p>
             <p><strong>Collections:</strong> Cached for 30 minutes</p>
             <p><strong>Diameters:</strong> Cached for 2 hours</p>
             <p><strong>Price Ranges:</strong> Cached for 15 minutes</p>
