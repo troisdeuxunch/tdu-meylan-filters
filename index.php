@@ -78,7 +78,7 @@ function tdu_mf_get_wpml_lang_filter_sql( $taxonomy, $tt_alias = 'tt' ) {
  */
 function tdu_mf_get_categories_structure() {
     $cache_key = 'tdu_categories_structure' . tdu_mf_lang_cache_suffix();
-    $categories = wp_cache_get($cache_key);
+    $categories = get_transient($cache_key);
     
     if (false === $categories) {
         $parent_args = array(
@@ -93,7 +93,7 @@ function tdu_mf_get_categories_structure() {
         $categories = array();
 
         if (is_wp_error($parent_categories) || empty($parent_categories)) {
-            wp_cache_set($cache_key, array(), '', CACHE_TIME_CATEGORIES_STRUCTURE);
+            set_transient($cache_key, array(), CACHE_TIME_CATEGORIES_STRUCTURE);
             return array();
         }
 
@@ -131,7 +131,7 @@ function tdu_mf_get_categories_structure() {
             $categories[] = $category;
         }
         
-        wp_cache_set($cache_key, $categories, '', CACHE_TIME_CATEGORIES_STRUCTURE_WITH_DATA);
+        set_transient($cache_key, $categories, CACHE_TIME_CATEGORIES_STRUCTURE_WITH_DATA);
     }
 
     return $categories;
@@ -722,14 +722,15 @@ function tdu_mf_get_new_categories()
 		$brand = meylan_get_queried_term();
 		
 		// Check cache first
-		$cache_key = 'brand_categories_' . $brand->term_id;
-		$children_categories = wp_cache_get($cache_key);
+		$cache_key = 'tdu_brand_categories_' . $brand->term_id . tdu_mf_lang_cache_suffix();
+		$children_categories = get_transient($cache_key);
 
 		if (false === $children_categories) {
-			// Get products from this brand
-			$products = get_posts(array(
+			$product_ids = get_posts(array(
 				'post_type' => 'product',
 				'numberposts' => -1,
+				'fields' => 'ids',
+				'no_found_rows' => true,
 				'tax_query' => array(
 					array(
 						'taxonomy' => 'product_brand',
@@ -739,26 +740,22 @@ function tdu_mf_get_new_categories()
 				)
 			));
 
-			// Get categories from these products
-			$category_ids = array();
-			foreach ($products as $product) {
-				$terms = wp_get_post_terms($product->ID, 'product_cat');
-				foreach ($terms as $term) {
-					if ($term->parent === $parent_category->term_id) {
-						$category_ids[$term->term_id] = $term->term_id;
-					}
-				}
+			$children_categories = array();
+
+			if (!empty($product_ids) && $parent_category) {
+				$children_categories = get_terms(array(
+					'taxonomy' => 'product_cat',
+					'object_ids' => $product_ids,
+					'parent' => $parent_category->term_id,
+					'hide_empty' => false
+				));
 			}
 
-			// Get the category terms
-			$children_categories = get_terms(array(
-				'taxonomy' => 'product_cat',
-				'include' => array_values($category_ids),
-				'hide_empty' => false
-			));
+			if (is_wp_error($children_categories)) {
+				$children_categories = array();
+			}
 
-			// Cache for 1 hour
-			wp_cache_set($cache_key, $children_categories, '', CACHE_TIME_CATEGORY_BRANDS);
+			set_transient($cache_key, $children_categories, CACHE_TIME_CATEGORY_BRANDS);
 		}
 
 	} else {
@@ -1368,13 +1365,13 @@ add_action('delete_post', 'tdu_mf_clear_product_cache', 10, 2);
  * language (not just the language of the request that triggered the clear).
  */
 function tdu_mf_clear_categories_structure_cache() {
-    wp_cache_delete('tdu_categories_structure');
+    delete_transient('tdu_categories_structure');
 
     if ( defined( 'ICL_SITEPRESS_VERSION' ) ) {
         $languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
         if ( is_array( $languages ) ) {
             foreach ( array_keys( $languages ) as $lang_code ) {
-                wp_cache_delete( 'tdu_categories_structure_' . $lang_code );
+                delete_transient( 'tdu_categories_structure_' . $lang_code );
             }
         }
     }
@@ -1395,6 +1392,7 @@ function tdu_mf_clear_category_cache($term_id = null) {
     tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
+    tdu_mf_clear_transients_by_prefix('tdu_brand_categories_');
 }
 
 /**
@@ -1407,23 +1405,34 @@ function tdu_mf_clear_brand_cache($term_id = null) {
     tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
+    tdu_mf_clear_transients_by_prefix('tdu_brand_categories_');
 }
 
 /**
  * Clear product-related caches
  */
 function tdu_mf_clear_product_cache($post_id, $post = null) {
-    if (is_object($post) && $post->post_type === 'product') {
-        // Clear all product-related caches
-        tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
-        tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
-        tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
-        tdu_mf_clear_transients_by_prefix('tdu_collections_');
-        tdu_mf_clear_transients_by_prefix('tdu_price_');
-        
-        // Clear diameter cache
-        delete_transient('tdu_diameters_processed');
+    if (!is_object($post) || $post->post_type !== 'product') {
+        return;
     }
+
+    // The product sync saves one product every few seconds: the filter lists are
+    // rebuilt at most once every 15 minutes.
+    if (!wp_next_scheduled('tdu_mf_clear_product_lists')) {
+        wp_schedule_single_event(time() + 15 * MINUTE_IN_SECONDS, 'tdu_mf_clear_product_lists');
+    }
+}
+add_action('tdu_mf_clear_product_lists', 'tdu_mf_clear_product_lists');
+
+function tdu_mf_clear_product_lists() {
+    tdu_mf_clear_transients_by_prefix('tdu_category_brands_');
+    tdu_mf_clear_transients_by_prefix('tdu_watch_types_');
+    tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
+    tdu_mf_clear_transients_by_prefix('tdu_collections_');
+    tdu_mf_clear_transients_by_prefix('tdu_price_');
+    tdu_mf_clear_transients_by_prefix('tdu_brand_categories_');
+
+    delete_transient('tdu_diameters_processed');
 }
 
 /**
@@ -1449,6 +1458,7 @@ function tdu_mf_clear_all_caches() {
     tdu_mf_clear_transients_by_prefix('tdu_jewelry_types_');
     tdu_mf_clear_transients_by_prefix('tdu_collections_');
     tdu_mf_clear_transients_by_prefix('tdu_price_');
+    tdu_mf_clear_transients_by_prefix('tdu_brand_categories_');
     delete_transient('tdu_diameters_processed');
     
     return true;
@@ -1591,7 +1601,7 @@ if (defined('WP_DEBUG') && WP_DEBUG) {
             echo "Current Parent Category: " . (tdu_mf_get_current_parent_category() ?: 'null') . "\n";
             echo "Current Children Category: " . (tdu_mf_get_current_children_category() ?: 'null') . "\n";
             echo "Current Brand: " . (tdu_get_current_brand_query_var() ?: 'null') . "\n";
-            echo "Cache Status: " . (wp_cache_get('tdu_categories_structure') ? 'enabled' : 'disabled') . "\n";
+            echo "Cache Status: " . (get_transient('tdu_categories_structure' . tdu_mf_lang_cache_suffix()) ? 'enabled' : 'disabled') . "\n";
             echo "-->\n";
         }
     }
